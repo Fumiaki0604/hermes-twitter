@@ -36,6 +36,8 @@ COOKIES_PATH = Path.home() / ".hermes-twitter" / "cookies.json"
 LM_STUDIO_BASE = "http://localhost:1234"
 LM_MODEL = "qwen/qwen3.6-35b-a3b"
 TOP_PICK_COUNT = 3  # 📌 を付ける件数
+COMMENTARY_COUNT = 2  # Hermesの解説・感想を付ける件数
+SOUL_PATH = Path.home() / "dev" / "hermesAgent" / "SOUL.md"
 
 MAX_PER_USER = 3
 FETCH_COUNT = 50
@@ -151,7 +153,35 @@ def rank_by_importance(tweets: list[dict]) -> list[dict]:
         return tweets
 
 
-def build_embeds(tweets: list[dict], top_pick_count: int = 0) -> list[dict]:
+def load_soul() -> str:
+    if SOUL_PATH.exists():
+        return SOUL_PATH.read_text(encoding="utf-8")
+    return "あなたはHermesです。有能なキャリアウーマン。ワタシ一人称。やや高飛車だが面倒見がよい。"
+
+
+def generate_commentary(tweet: dict) -> str:
+    """重要度上位のツイートに、Hermesとして解説＋感想を付ける。失敗時は空文字を返す。"""
+    text = tweet["rt_text"] if tweet["is_rt"] and tweet["rt_text"] else tweet["text"]
+    soul = load_soul()
+    system = (
+        soul + "\n\n---\n\n"
+        "DiscordのAI/テック情報まとめで、注目ツイートにひとこと添えます。"
+        "まず何の話か一文で分かりやすく説明し、そのうえでHermesとしての感想・見解を1文加えて。"
+        "キャラクターの口調をそのまま使う。最大2〜3文、日本語で。"
+        "IMPORTANT: コメント本文のみ出力。前置き・メタ情報・区切り線など一切含めない。"
+    )
+    user = f"ツイート（@{tweet['screen_name']}）: {text[:400]}"
+    try:
+        content = _lm_studio_request(system, user, max_tokens=2000)
+        if not content:
+            content = _lm_studio_request(system, user, max_tokens=4000)
+        return content
+    except Exception as e:
+        print(f"[commentary] failed: {e}", file=sys.stderr)
+        return ""
+
+
+def build_embeds(tweets: list[dict], top_pick_count: int = 0, commentary_count: int = 0) -> list[dict]:
     embeds = []
     for i, t in enumerate(tweets):
         url = f"https://twitter.com/{t['screen_name']}/status/{t['id']}"
@@ -193,6 +223,12 @@ def build_embeds(tweets: list[dict], top_pick_count: int = 0) -> list[dict]:
                 },
                 "url": url,
             }
+
+        if i < commentary_count:
+            commentary = generate_commentary(t)
+            if commentary:
+                embed["fields"] = [{"name": "💬 Hermesの解説", "value": commentary[:1000]}]
+
         embeds.append(embed)
     return embeds
 
@@ -230,7 +266,7 @@ def main():
     now = datetime.now().strftime("%Y/%m/%d %H:%M")
     tweets = fetch_list_tweets(list_id)
     tweets = rank_by_importance(tweets)
-    embeds = build_embeds(tweets, top_pick_count=TOP_PICK_COUNT)
+    embeds = build_embeds(tweets, top_pick_count=TOP_PICK_COUNT, commentary_count=COMMENTARY_COUNT)
     post_to_discord(f"**📋 Twitterリスト更新 ({now})** — 重要度順", embeds)
     print(f"Discord に投稿しました ({len(tweets)}件)")
 
